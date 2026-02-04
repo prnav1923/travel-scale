@@ -1,0 +1,4 @@
+.env
+.travel/
+__pycache__/
+*.pyc
