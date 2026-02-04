@@ -3,6 +3,7 @@ import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from dotenv import load_dotenv
+from rag_engine import RagEngine
 
 load_dotenv()
 
@@ -15,18 +16,61 @@ if not api_key:
     st.stop()
 
 # Initialize LLM
-llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.7,api_key=api_key)
+llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.7, api_key=api_key)
 
+# Initialize RAG Engine
+if 'rag' not in st.session_state:
+    st.session_state.rag = RagEngine(api_key)
+
+def load_knowledge_base(force_rebuild=False):
+    rag = st.session_state.rag
+    if force_rebuild or not rag.load_index():
+        with st.spinner("Building knowledge base from files..."):
+            rag.ingest("data")
+            rag.build_index()
+            rag.save_index()
+            st.success("Knowledge base built and saved!")
+
+# Load on startup
+if not st.session_state.rag.vector_store:
+    load_knowledge_base()
+
+# Sidebar Status
+with st.sidebar:
+    st.header("Knowledge Base 📚")
+    # Show status (approximation based on loaded docs if available, or just success tick)
+    if st.session_state.rag.vector_store:
+        st.success("Index Loaded ✅")
+    else:
+        st.warning("Index Not Loaded")
+        
+    if st.button("🔄 Rebuild Index"):
+        load_knowledge_base(force_rebuild=True)
+        st.rerun()
 
 # Basic query interface
 query = st.text_input("Enter travel query (e.g., 'Budget trip for 2 to SE Asia')")
 
 if query:
+    # 1. Retrieve Context
+    context_text = ""
+    if 'rag' in st.session_state:
+        docs = st.session_state.rag.query(query)
+        context_text = "\n\n".join([d.page_content for d in docs])
+    
+    # 2. Augmented Prompt
     prompt = ChatPromptTemplate.from_template(
-        "You are a travel cost optimizer. Answer: {query}"
+        """You are a travel cost optimizer. Use the following context to answer the user's question. 
+        If the context doesn't contain the answer, use your general knowledge but prioritize specific prices/details from context.
+        
+        Context:
+        {context}
+        
+        Question: {query}"""
     )
     chain = prompt | llm
-    response = chain.invoke({"query": query})
+    response = chain.invoke({"query": query, "context": context_text})
+    
     # Fix: Extract text from AIMessage object
     if hasattr(response, 'content'):
         if isinstance(response.content, list):
@@ -48,4 +92,9 @@ if query:
         display_text = str(response)
 
     st.success("✅ **Plan:**")
-    st.write(display_text)
+    st.markdown(display_text)
+    
+    # Show sources in expander
+    if context_text:
+        with st.expander("View Retrieved Sources"):
+            st.markdown(context_text)
